@@ -63,3 +63,12 @@ target_link_libraries(ledge PRIVATE
     SDL3::SDL3
     SDL3_image::SDL3_image
 )
+
+# ---------------------------------------------------------------- assets
+# copy assets next to the build exe.
+add_custom_command(TARGET ledge POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets"
+        "$<TARGET_FILE_DIR:ledge>/assets"
+    COMMENT "Copying assets to $<TARGET_FILE_DIR:ledge>"
+)
