@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <vector>
 #include "animation.h"
+#include "gameobject.h"
 
 struct SDLState
 {
