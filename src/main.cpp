@@ -3,6 +3,8 @@
 #include <SDL3_image/SDL_image.h>
 #include <string>
 #include <stdint.h>
+#include <vector>
+#include "animation.h"
 
 struct SDLState
 {
@@ -13,6 +15,58 @@ struct SDLState
 
 void cleanup(SDLState &state);
 bool initialize(SDLState &state);
+
+struct Resources
+{
+    const int ANIM_PLAYER_IDLE = 0;
+    std::vector<Animation> playerAnimations;
+    // Tracks all loaded textures.
+    std::vector<SDL_Texture *> textures;
+
+    SDL_Texture *texIdle;
+
+    // This method loads textures from an `assets/` directory from
+    // program root and it does not traverse subdirectories.
+    //
+    // Ensure that `filepath` includes subdirectories.
+    // For example: "player/Idle.png" maps to `<exe-dir>/assets/player/Idle.png`
+    SDL_Texture *loadTexture(SDL_Renderer *renderer, const std::string &filepath)
+    {
+
+        // get directory where app is run from
+        const char *basePath = SDL_GetBasePath();
+        // basePath already includes a trailing /
+        const std::string assetDir = std::string(basePath ? basePath : "") + "assets/";
+
+        SDL_Texture *tex = IMG_LoadTexture(renderer, (assetDir + filepath).c_str());
+
+        SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_NEAREST);
+
+        textures.push_back(tex);
+
+        return tex;
+    };
+
+    // Creates a Animation object for player idle animation
+    // and loads its associated png as a texture.
+    void load(SDLState &state)
+    {
+        playerAnimations.resize(5);
+        playerAnimations[ANIM_PLAYER_IDLE] = Animation(1.6f, 7);
+
+        // setup player idle texture
+        texIdle = loadTexture(state.renderer, "player/Idle.png");
+    };
+
+    // Destorys all loaded textures.
+    void unload(SDLState &state)
+    {
+        for (SDL_Texture *tex : textures)
+        {
+            SDL_DestroyTexture(tex);
+        }
+    };
+};
 
 int main(int argc, char *argv[])
 {
@@ -31,20 +85,8 @@ int main(int argc, char *argv[])
     };
 
     //* load game assets
-
-    const char *basePath = SDL_GetBasePath();
-    // basePath includes a trailing /
-    const std::string assetDir = std::string(basePath ? basePath : "") + "assets/";
-
-    SDL_Texture *idleTex = IMG_LoadTexture(state.renderer, (assetDir + "player/Idle.png").c_str());
-    SDL_SetTextureScaleMode(idleTex, SDL_SCALEMODE_NEAREST);
-
-    if (!idleTex)
-    {
-        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Error", SDL_GetError(), NULL);
-        cleanup(state);
-        return 1;
-    }
+    Resources res;
+    res.load(state);
 
     //* setup game data
 
@@ -195,7 +237,7 @@ int main(int argc, char *argv[])
         };
 
         // draw player idle state to back buffer
-        SDL_RenderTextureRotated(state.renderer, idleTex, &src, &dst, 0, NULL, flipPlayerHorizontal ? SDL_FLIP_HORIZONTAL : SDL_FLIP_NONE);
+        SDL_RenderTextureRotated(state.renderer, res.texIdle, &src, &dst, 0, NULL, flipPlayerHorizontal ? SDL_FLIP_HORIZONTAL : SDL_FLIP_NONE);
 
         // update front buffer with our back buffer so the monitor picks it up
         //! IMP: the old front buffer typically becomes the new back buffer, but
@@ -205,7 +247,7 @@ int main(int argc, char *argv[])
     }
 
     //* freeup vram used for textures
-    SDL_DestroyTexture(idleTex);
+    res.unload(state);
     cleanup(state);
     return 0;
 }
