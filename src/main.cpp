@@ -145,12 +145,6 @@ int main(int, char *[])
 
     gs.layers[LAYER_IDX_CHARACTERS].push_back(player);
 
-    // move the player that actually lives in the layer;
-    // the push_back above copied it, so `player` is now a stale duplicate
-    GameObject &playerObj = gs.layers[LAYER_IDX_CHARACTERS].back();
-
-    bool onGround = true;
-
     //* game loop
 
     // milliseconds elapsed since last frame
