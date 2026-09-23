@@ -1,6 +1,7 @@
 #pragma once
 #include "timer.h"
 
+// Wrapper around a timer that syncs an object's animation frames.
 class Animation
 {
     Timer timer_;
@@ -24,5 +25,11 @@ public:
     void step(float delta)
     {
         timer_.step(delta);
+    }
+
+    // restarts the animation from its first frame
+    void reset()
+    {
+        timer_.reset();
     }
 };

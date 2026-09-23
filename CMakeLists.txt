@@ -54,14 +54,30 @@ set(SDLIMAGE_PNG_LIBPNG OFF CACHE BOOL "" FORCE)
 
 FetchContent_MakeAvailable(SDL3_image)
 
+# ---------------------------------------------------------- GLM
+FetchContent_Declare(
+	glm
+	GIT_REPOSITORY	https://github.com/g-truc/glm.git
+	GIT_TAG 	0af55ccecd98d4e5a8d1fad7de25ba429d60e863 #refs/tags/1.0.1
+)
+
+FetchContent_MakeAvailable(glm)
+
+
 # ------------------------------------------------------------ our target
 add_executable(ledge
     src/main.cpp
+    src/animation.h
+    src/timer.h
+    src/gameobject.h
 )
+
+target_include_directories(ledge PRIVATE src)
 
 target_link_libraries(ledge PRIVATE
     SDL3::SDL3
     SDL3_image::SDL3_image
+    glm::glm
 )
 
 # ---------------------------------------------------------------- assets

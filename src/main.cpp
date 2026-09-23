@@ -4,27 +4,53 @@
 #include <string>
 #include <stdint.h>
 #include <vector>
-#include "animation.h"
+#include <array>
 #include "gameobject.h"
 
 struct SDLState
 {
-    SDL_Window *window;
-    SDL_Renderer *renderer;
-    int width, height, logW, logH;
+    SDL_Window *window = nullptr;
+    SDL_Renderer *renderer = nullptr;
+    int width = 0, height = 0, logW = 0, logH = 0;
+    const bool *keys = nullptr;
+
+    SDLState() : keys(SDL_GetKeyboardState(NULL)) {};
 };
 
-void cleanup(SDLState &state);
-bool initialize(SDLState &state);
+const size_t LAYER_IDX_LEVEL = 0;
+const size_t LAYER_IDX_CHARACTERS = 1;
 
+const size_t SPRITE_SIZE = 128;
+
+struct GameState
+{
+
+    // The game consists of layers and
+    // each layer is made up of game objects.
+    // Initially, the game starts with two layers,
+    // one for the level design and another for the characters.
+    std::array<std::vector<GameObject>, 2> layers;
+    float gravity = 200.0f;
+    float groundY = 0.0f;
+
+    GameState()
+    {
+    }
+};
+
+// Handles the lifecycle of program's textures and Animations.
 struct Resources
 {
     const int ANIM_PLAYER_IDLE = 0;
+    const int ANIM_PLAYER_RUN = 1;
+    const int ANIM_PLAYER_JUMP = 2;
+    // Stores all loaded animations.
     std::vector<Animation> playerAnimations;
-    // Tracks all loaded textures.
+    // Stores all loaded textures.
     std::vector<SDL_Texture *> textures;
 
-    SDL_Texture *texIdle;
+    // Player's idle texture is displayed on game startup
+    SDL_Texture *texIdle = nullptr, *texRun = nullptr, *texJump = nullptr;
 
     // This method loads textures from an `assets/` directory from
     // program root and it does not traverse subdirectories.
@@ -50,17 +76,21 @@ struct Resources
 
     // Creates a Animation object for player idle animation
     // and loads its associated png as a texture.
-    void load(SDLState &state)
+    void load(const SDLState &state)
     {
         playerAnimations.resize(5);
-        playerAnimations[ANIM_PLAYER_IDLE] = Animation(1.6f, 7);
+        playerAnimations[ANIM_PLAYER_IDLE] = Animation(1.6f, 6);
+        playerAnimations[ANIM_PLAYER_RUN] = Animation(0.5f, 8);
+        playerAnimations[ANIM_PLAYER_JUMP] = Animation(1.5f, 12);
 
         // setup player idle texture
         texIdle = loadTexture(state.renderer, "player/Idle.png");
+        texRun = loadTexture(state.renderer, "player/Run.png");
+        texJump = loadTexture(state.renderer, "player/Jump.png");
     };
 
-    // Destorys all loaded textures.
-    void unload(SDLState &state)
+    // Destroys all loaded textures.
+    void unload(const SDLState &)
     {
         for (SDL_Texture *tex : textures)
         {
@@ -69,7 +99,12 @@ struct Resources
     };
 };
 
-int main(int argc, char *argv[])
+void cleanup(SDLState &state);
+bool initialize(SDLState &state);
+void drawObject(const SDLState &state, GameObject &obj);
+void updateObject(const SDLState &state, GameState &gs, Resources &res, GameObject &obj, float delta);
+
+int main(int, char *[])
 {
 
     SDLState state{};
@@ -91,32 +126,35 @@ int main(int argc, char *argv[])
 
     //* setup game data
 
-    const int spriteSize = 128;
-    const bool *const keys = SDL_GetKeyboardState(NULL);
+    GameState gs;
 
-    const float groundY = state.logH - spriteSize;
+    //* create player
+    GameObject player;
+    gs.groundY = static_cast<float>(state.logH) - static_cast<float>(SPRITE_SIZE);
+
+    player.data = PlayerData{};
+
+    player.texture = res.texIdle;
+    player.animations = res.playerAnimations;
+    player.currentAnimationIdx = res.ANIM_PLAYER_IDLE;
+
+    player.maxSpeedX = 100;
+    player.pos = glm::vec2(150.0f, gs.groundY);
+    player.accel = glm::vec2(900.0f, 0.0f);
+    player.velocity = glm::vec2(0.0f);
+
+    gs.layers[LAYER_IDX_CHARACTERS].push_back(player);
+
+    // move the player that actually lives in the layer;
+    // the push_back above copied it, so `player` is now a stale duplicate
+    GameObject &playerObj = gs.layers[LAYER_IDX_CHARACTERS].back();
+
     bool onGround = true;
-
-    float playerX = 150.0f;
-    float playerY = groundY;
-
-    // updates on jump; later on manipulated by gravity
-    float velocityY = 0.0f;
-
-    // all speeds below are in pixels/sec
-    const float moveSpeed = 200.0f;
-    const float jumpSpeed = -320.0f;
-
-    // gravity defined in pixels/s^2
-    const float gravity = 900.0f;
 
     //* game loop
 
     // milliseconds elapsed since last frame
     uint64_t prevTicks = SDL_GetTicks();
-
-    // flips player model horizontally when moving left/right
-    bool flipPlayerHorizontal = false;
 
     bool running = true;
     // one iteration  =  1 frame
@@ -141,18 +179,6 @@ int main(int argc, char *argv[])
                 state.height = event.window.data2;
                 break;
             };
-
-            // player jump fires once per press
-            // the onGround flag makes sure this branch is not fired mid jump
-            case SDL_EVENT_KEY_DOWN:
-            {
-                if (event.key.scancode == SDL_SCANCODE_W && !event.key.repeat && onGround)
-                {
-                    velocityY = jumpSpeed;
-                    onGround = false;
-                }
-                break;
-            }
             }
         }
 
@@ -162,36 +188,18 @@ int main(int argc, char *argv[])
         float elapsed = (nowTicks - prevTicks) / 1000.0f;
         prevTicks = nowTicks;
 
-        // player horizontal movement
-        // -1.0f (moving left), +1.0f (moving right), or 0.0f (standing still)
-        float vectorX = 0.0f;
-
-        if (keys[SDL_SCANCODE_A])
+        //* update visible animation frames and positions for all game objects
+        for (auto &layer : gs.layers)
         {
-            vectorX -= 1.0f;
-            flipPlayerHorizontal = true;
-        }
+            for (auto &obj : layer)
+            {
+                updateObject(state, gs, res, obj, elapsed);
 
-        if (keys[SDL_SCANCODE_D])
-        {
-            flipPlayerHorizontal = false;
-            vectorX += 1.0f;
-        }
-
-        // distance =  direction x speed x time
-        playerX += vectorX * moveSpeed * elapsed;
-
-        // if mid jump; add effect from gravity
-        velocityY += gravity * elapsed;
-        // distance =  speed * time
-        playerY += velocityY * elapsed;
-
-        // reset speed  and flags on touching ground
-        if (playerY >= groundY)
-        { // ensure player lands on top of ground
-            playerY = groundY;
-            velocityY = 0.0f;
-            onGround = true;
+                if (obj.currentAnimationIdx != -1)
+                {
+                    obj.animations[obj.currentAnimationIdx].step(elapsed);
+                }
+            }
         }
 
         //* 3. draw to back buffer
@@ -219,26 +227,14 @@ int main(int argc, char *argv[])
 
         SDL_RenderFillRect(state.renderer, &canvas);
 
-        // extract section from the texture
-        // all dims depend on the logical renderer dims and not window dims
-        // x, y are the offsets from the orgin (top left corner of image)
-        SDL_FRect src{
-            .x = 0.0f,
-            .y = 0.0f,
-            .w = static_cast<float>(spriteSize),
-            .h = static_cast<float>(spriteSize),
-        };
-
-        SDL_FRect dst{
-            .x = playerX,
-            .y = static_cast<float>(playerY),
-            .w = static_cast<float>(spriteSize),
-            .h = static_cast<float>(spriteSize),
-
-        };
-
-        // draw player idle state to back buffer
-        SDL_RenderTextureRotated(state.renderer, res.texIdle, &src, &dst, 0, NULL, flipPlayerHorizontal ? SDL_FLIP_HORIZONTAL : SDL_FLIP_NONE);
+        //* draw all updated game objects to screen
+        for (auto &layer : gs.layers)
+        {
+            for (auto &obj : layer)
+            {
+                drawObject(state, obj);
+            }
+        }
 
         // update front buffer with our back buffer so the monitor picks it up
         //! IMP: the old front buffer typically becomes the new back buffer, but
@@ -253,14 +249,22 @@ int main(int argc, char *argv[])
     return 0;
 }
 
+// Shows the current SDL error, frees whatever was created so far
+// and returns false so callers can `return initFailed(state);`
+static bool initFailed(SDLState &state)
+{
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Error", SDL_GetError(), NULL);
+    cleanup(state);
+    return false;
+}
+
+// Sets up SDL, the window and the renderer.
+// On failure, everything created so far is cleaned up before returning false.
 bool initialize(SDLState &state)
 {
-    bool initSuccess = true;
-
     if (!SDL_Init(SDL_INIT_VIDEO))
     {
-        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Error", SDL_GetError(), NULL);
-        initSuccess = false;
+        return initFailed(state);
     }
 
     //* create window
@@ -269,9 +273,7 @@ bool initialize(SDLState &state)
 
     if (!state.window)
     {
-        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Error", SDL_GetError(), NULL);
-        cleanup(state);
-        initSuccess = false;
+        return initFailed(state);
     }
 
     //* create renderer
@@ -280,16 +282,14 @@ bool initialize(SDLState &state)
 
     if (!state.renderer)
     {
-        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Error", SDL_GetError(), NULL);
-        cleanup(state);
-        initSuccess = false;
+        return initFailed(state);
     }
 
     // w/o vsync: thousand of frames/ sec
     // with vsync: frames/sec = monitor's refresh rate
     if (!SDL_SetRenderVSync(state.renderer, 1))
     {
-        initSuccess = false;
+        return initFailed(state);
     }
 
     //* configure renderer dimensions
@@ -297,10 +297,10 @@ bool initialize(SDLState &state)
 
     if (!SDL_SetRenderLogicalPresentation(state.renderer, state.logW, state.logH, SDL_LOGICAL_PRESENTATION_LETTERBOX))
     {
-        initSuccess = false;
+        return initFailed(state);
     }
 
-    return initSuccess;
+    return true;
 }
 
 void cleanup(SDLState &state)
@@ -309,3 +309,152 @@ void cleanup(SDLState &state)
     SDL_DestroyWindow(state.window);
     SDL_Quit();
 }
+
+/// @brief Draws a game texture to the screen.
+/// @param state
+/// @param obj
+void drawObject(const SDLState &state, GameObject &obj)
+
+{
+    float srcX = obj.currentAnimationIdx != -1 ? obj.animations[obj.currentAnimationIdx].currentFrame() * SPRITE_SIZE : 0.0f;
+
+    // extract section from the texture
+    // all dims depend on the logical renderer dims and not window dims
+    // x, y are the offsets from the orgin (top left corner of image)
+    SDL_FRect src{
+        .x = srcX,
+        .y = 0.0f,
+        .w = static_cast<float>(SPRITE_SIZE),
+        .h = static_cast<float>(SPRITE_SIZE),
+    };
+
+    SDL_FRect dst{
+        .x = static_cast<float>(obj.pos.x),
+        .y = static_cast<float>(obj.pos.y),
+        .w = static_cast<float>(SPRITE_SIZE),
+        .h = static_cast<float>(SPRITE_SIZE),
+
+    };
+
+    SDL_FlipMode flipMode = obj.dir == -1 ? SDL_FLIP_HORIZONTAL : SDL_FLIP_NONE;
+
+    // draw player idle state to back buffer
+    SDL_RenderTextureRotated(state.renderer, obj.texture, &src, &dst, 0, NULL, flipMode);
+};
+
+void updateObject(const SDLState &state, GameState &gs, Resources &res, GameObject &obj, float delta)
+{
+    // note: std::get_if() returns a pointer to the PlayerData
+    // if that is what the variant holds, otherwise nullptr
+    if (PlayerData *pd = std::get_if<PlayerData>(&obj.data))
+    {
+        float dirVec = 0;
+
+        if (state.keys[SDL_SCANCODE_A])
+        {
+            dirVec += -1;
+        }
+
+        if (state.keys[SDL_SCANCODE_D])
+        {
+            dirVec += 1;
+        }
+
+        // horizontal movement registered
+        if (dirVec)
+        {
+            obj.dir = dirVec;
+        }
+
+        if (state.keys[SDL_SCANCODE_W] && obj.isGrounded)
+        {
+            obj.isGrounded = false;
+            pd->state = PlayerState::jumping;
+            // current y speed is 0 so add jump impulse upwards
+            obj.velocity.y = -150.00f;
+            obj.texture = res.texJump;
+            obj.currentAnimationIdx = res.ANIM_PLAYER_JUMP;
+            // start every jump from the first frame
+            obj.animations[res.ANIM_PLAYER_JUMP].reset();
+        }
+
+        switch (pd->state)
+        {
+        case PlayerState::idle:
+            // update state to running if movement is registered
+            if (dirVec)
+            {
+                pd->state = PlayerState::running;
+                obj.texture = res.texRun;
+                obj.currentAnimationIdx = res.ANIM_PLAYER_RUN;
+            }
+            else
+            { //? apply deceleration on character slide after movement
+                if (obj.velocity.x)
+                { // deceleration strength opposite to movement direction
+                    const float decelFactor = obj.velocity.x > 0 ? -1.5f : 1.5f;
+
+                    // decel for the current time interval
+                    float decel = decelFactor * obj.accel.x * delta;
+
+                    // when |decel| is bigger than current velocity at the end of slide,
+                    // character slides in opposite direction because
+                    // the velocity crosses 0 and drop to negative
+                    // clamp the velocity to 0
+                    if (std::abs(decel) > std::abs(obj.velocity.x))
+                    {
+                        obj.velocity.x = 0;
+                    }
+                    else
+                    {
+                        obj.velocity.x += decel;
+                    }
+                }
+            }
+
+            break;
+
+        case PlayerState::running:
+            // stop running if movement key is let go
+            if (!dirVec)
+            {
+                pd->state = PlayerState::idle;
+                obj.texture = res.texIdle;
+                obj.currentAnimationIdx = res.ANIM_PLAYER_IDLE;
+            }
+            break;
+
+        case PlayerState::jumping:
+
+            // check if landed
+            if (obj.isGrounded)
+            {
+                pd->state = dirVec ? PlayerState::running : PlayerState::idle;
+                obj.texture = dirVec ? res.texRun : res.texIdle;
+                obj.currentAnimationIdx = dirVec ? res.ANIM_PLAYER_RUN : res.ANIM_PLAYER_IDLE;
+            }
+            break;
+        }
+
+        // calculate new horizontal velocity from effect of acceleration
+        obj.velocity.x += dirVec * obj.accel.x * delta;
+
+        if (std::abs(obj.velocity.x) > obj.maxSpeedX)
+        {
+            obj.velocity.x = dirVec * obj.maxSpeedX;
+        }
+
+        // gravity pulls down player
+        obj.velocity.y += gs.gravity * delta;
+
+        // calculate resulting player pos
+        obj.pos += obj.velocity * delta;
+
+        if (obj.pos.y >= gs.groundY)
+        {
+            obj.pos.y = gs.groundY;
+            obj.velocity.y = 0.0f;
+            obj.isGrounded = true;
+        }
+    }
+};
