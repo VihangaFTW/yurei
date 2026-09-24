@@ -9,7 +9,8 @@ enum class PlayerState
 {
     idle,
     running,
-    jumping
+    jumping,
+    attacking
 };
 
 struct PlayerData

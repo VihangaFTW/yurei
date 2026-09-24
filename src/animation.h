@@ -27,6 +27,12 @@ public:
         timer_.step(delta);
     }
 
+    // true once the animation has played through at least once since last reset
+    bool isDone() const
+    {
+        return timer_.isTimeout();
+    }
+
     // restarts the animation from its first frame
     void reset()
     {

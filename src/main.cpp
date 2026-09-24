@@ -44,13 +44,14 @@ struct Resources
     const int ANIM_PLAYER_IDLE = 0;
     const int ANIM_PLAYER_RUN = 1;
     const int ANIM_PLAYER_JUMP = 2;
+    const int ANIM_PLAYER_ATTACK = 3;
     // Stores all loaded animations.
     std::vector<Animation> playerAnimations;
     // Stores all loaded textures.
     std::vector<SDL_Texture *> textures;
 
-    // Player's idle texture is displayed on game startup
-    SDL_Texture *texIdle = nullptr, *texRun = nullptr, *texJump = nullptr;
+    // All player's textures
+    SDL_Texture *texIdle = nullptr, *texRun = nullptr, *texJump = nullptr, *texAttack = nullptr;
 
     // This method loads textures from an `assets/` directory from
     // program root and it does not traverse subdirectories.
@@ -82,11 +83,13 @@ struct Resources
         playerAnimations[ANIM_PLAYER_IDLE] = Animation(1.6f, 6);
         playerAnimations[ANIM_PLAYER_RUN] = Animation(0.5f, 8);
         playerAnimations[ANIM_PLAYER_JUMP] = Animation(1.5f, 12);
+        playerAnimations[ANIM_PLAYER_ATTACK] = Animation(1.0f, 4);
 
         // setup player idle texture
         texIdle = loadTexture(state.renderer, "player/Idle.png");
         texRun = loadTexture(state.renderer, "player/Run.png");
         texJump = loadTexture(state.renderer, "player/Jump.png");
+        texAttack = loadTexture(state.renderer, "player/Attack_2.png");
     };
 
     // Destroys all loaded textures.
@@ -103,6 +106,7 @@ void cleanup(SDLState &state);
 bool initialize(SDLState &state);
 void drawObject(const SDLState &state, GameObject &obj);
 void updateObject(const SDLState &state, GameState &gs, Resources &res, GameObject &obj, float delta);
+void applyDecel(GameObject &obj, float delta);
 
 int main(int, char *[])
 {
@@ -344,12 +348,12 @@ void updateObject(const SDLState &state, GameState &gs, Resources &res, GameObje
     {
         float dirVec = 0;
 
-        if (state.keys[SDL_SCANCODE_A])
+        if (state.keys[SDL_SCANCODE_A] && pd->state != PlayerState::attacking)
         {
             dirVec += -1;
         }
 
-        if (state.keys[SDL_SCANCODE_D])
+        if (state.keys[SDL_SCANCODE_D] && pd->state != PlayerState::attacking)
         {
             dirVec += 1;
         }
@@ -372,6 +376,18 @@ void updateObject(const SDLState &state, GameState &gs, Resources &res, GameObje
             obj.animations[res.ANIM_PLAYER_JUMP].reset();
         }
 
+        // don't restart an attack that is already playing
+        if (state.keys[SDL_SCANCODE_SPACE] && pd->state != PlayerState::attacking && obj.isGrounded)
+        {
+            pd->state = PlayerState::attacking;
+            obj.texture = res.texAttack;
+            obj.currentAnimationIdx = res.ANIM_PLAYER_ATTACK;
+            // no movement during attack animation
+            obj.velocity.x = 0;
+            // start every attack from first frame
+            obj.animations[res.ANIM_PLAYER_ATTACK].reset();
+        }
+
         switch (pd->state)
         {
         case PlayerState::idle:
@@ -383,33 +399,14 @@ void updateObject(const SDLState &state, GameState &gs, Resources &res, GameObje
                 obj.currentAnimationIdx = res.ANIM_PLAYER_RUN;
             }
             else
-            { //? apply deceleration on character slide after movement
-                if (obj.velocity.x)
-                { // deceleration strength opposite to movement direction
-                    const float decelFactor = obj.velocity.x > 0 ? -1.5f : 1.5f;
-
-                    // decel for the current time interval
-                    float decel = decelFactor * obj.accel.x * delta;
-
-                    // when |decel| is bigger than current velocity at the end of slide,
-                    // character slides in opposite direction because
-                    // the velocity crosses 0 and drop to negative
-                    // clamp the velocity to 0
-                    if (std::abs(decel) > std::abs(obj.velocity.x))
-                    {
-                        obj.velocity.x = 0;
-                    }
-                    else
-                    {
-                        obj.velocity.x += decel;
-                    }
-                }
+            {
+                applyDecel(obj, delta);
             }
 
             break;
 
         case PlayerState::running:
-            // stop running if movement key is let go
+            // stop running if movement key is let go or when attacking
             if (!dirVec)
             {
                 pd->state = PlayerState::idle;
@@ -428,7 +425,20 @@ void updateObject(const SDLState &state, GameState &gs, Resources &res, GameObje
                 obj.currentAnimationIdx = dirVec ? res.ANIM_PLAYER_RUN : res.ANIM_PLAYER_IDLE;
             }
             break;
+
+        case PlayerState::attacking:
+            // hold the attack until its animation has played through once
+            if (obj.animations[res.ANIM_PLAYER_ATTACK].isDone())
+            {
+                // player stops moving after attack animation
+                pd->state = PlayerState::idle;
+                obj.texture = res.texIdle;
+                obj.currentAnimationIdx = res.ANIM_PLAYER_IDLE;
+            }
+            break;
         }
+
+        // * update player position with effect from gravity and accel
 
         // calculate new horizontal velocity from effect of acceleration
         obj.velocity.x += dirVec * obj.accel.x * delta;
@@ -438,7 +448,7 @@ void updateObject(const SDLState &state, GameState &gs, Resources &res, GameObje
             obj.velocity.x = dirVec * obj.maxSpeedX;
         }
 
-        // gravity pulls down player
+        // calculatew new vertical position from effect of gravity
         obj.velocity.y += gs.gravity * delta;
 
         // calculate resulting player pos
@@ -452,3 +462,29 @@ void updateObject(const SDLState &state, GameState &gs, Resources &res, GameObje
         }
     }
 };
+
+// Applies deceleration to game character's slide after movement
+void applyDecel(GameObject &obj, float delta)
+{
+
+    if (obj.velocity.x)
+    { // deceleration strength opposite to movement direction
+        const float decelFactor = obj.velocity.x > 0 ? -1.5f : 1.5f;
+
+        // decel for the current time interval
+        float decel = decelFactor * obj.accel.x * delta;
+
+        // when |decel| is bigger than current velocity at the end of slide,
+        // character slides in opposite direction because
+        // the velocity crosses 0 and drop to negative
+        // clamp the velocity to 0
+        if (std::abs(decel) > std::abs(obj.velocity.x))
+        {
+            obj.velocity.x = 0;
+        }
+        else
+        {
+            obj.velocity.x += decel;
+        }
+    }
+}
