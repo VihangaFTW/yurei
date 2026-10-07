@@ -41,10 +41,10 @@ struct GameState
 // Handles the lifecycle of program's textures and Animations.
 struct Resources
 {
-    const int ANIM_PLAYER_IDLE = 0;
-    const int ANIM_PLAYER_RUN = 1;
-    const int ANIM_PLAYER_JUMP = 2;
-    const int ANIM_PLAYER_ATTACK = 3;
+    const size_t ANIM_PLAYER_IDLE = 0;
+    const size_t ANIM_PLAYER_RUN = 1;
+    const size_t ANIM_PLAYER_JUMP = 2;
+    const size_t ANIM_PLAYER_ATTACK = 3;
     // Stores all loaded animations.
     std::vector<Animation> playerAnimations;
     // Stores all loaded textures.
@@ -193,9 +193,9 @@ int main(int, char *[])
             {
                 updateObject(state, gs, res, obj, elapsed);
 
-                if (obj.currentAnimationIdx != -1)
+                if (obj.currentAnimationIdx)
                 {
-                    obj.animations[obj.currentAnimationIdx].step(elapsed);
+                    obj.animations[*obj.currentAnimationIdx].step(elapsed);
                 }
             }
         }
@@ -314,7 +314,7 @@ void cleanup(SDLState &state)
 void drawObject(const SDLState &state, GameObject &obj)
 
 {
-    float srcX = obj.currentAnimationIdx != -1 ? obj.animations[obj.currentAnimationIdx].currentFrame() * SPRITE_SIZE : 0.0f;
+    float srcX = obj.currentAnimationIdx ? obj.animations[*obj.currentAnimationIdx].currentFrame() * SPRITE_SIZE : 0.0f;
 
     // extract section from the texture
     // all dims depend on the logical renderer dims and not window dims

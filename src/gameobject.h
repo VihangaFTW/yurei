@@ -2,6 +2,7 @@
 #include <glm/glm.hpp>
 #include <vector>
 #include <variant>
+#include <optional>
 #include <SDL3/SDL.h>
 #include "animation.h"
 
@@ -40,9 +41,7 @@ struct GameObject
     float dir, maxSpeedX;
     glm::vec2 pos, velocity, accel;
     std::vector<Animation> animations;
-    // index of currently playing frame of animation
-    // -1 means no animation
-    int currentAnimationIdx;
+    std::optional<size_t> currentAnimationIdx;
     SDL_Texture *texture;
 
     bool isGrounded;
@@ -54,7 +53,7 @@ struct GameObject
           pos(0.0f),
           velocity(0.0f),
           accel(0.0f),
-          currentAnimationIdx(-1),
+          currentAnimationIdx(std::nullopt),
           texture(nullptr),
           isGrounded(true)
 
