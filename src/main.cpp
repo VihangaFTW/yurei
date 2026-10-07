@@ -5,7 +5,18 @@
 #include <stdint.h>
 #include <vector>
 #include <array>
+#include <optional>
 #include "gameobject.h"
+#include "tile.h"
+
+constexpr size_t LAYER_IDX_BACKGROUND = 0;
+constexpr size_t LAYER_IDX_LEVEL = 1;
+constexpr size_t LAYER_IDX_CHARACTERS = 2;
+
+constexpr size_t SPRITE_SIZE = 128;
+
+constexpr size_t GRID_ROWS = 12;
+constexpr size_t GRID_COLS = 50;
 
 struct SDLState
 {
@@ -17,20 +28,15 @@ struct SDLState
     SDLState() : keys(SDL_GetKeyboardState(NULL)) {};
 };
 
-const size_t LAYER_IDX_LEVEL = 0;
-const size_t LAYER_IDX_CHARACTERS = 1;
-
-const size_t SPRITE_SIZE = 128;
-
 struct GameState
 {
 
     // The game consists of layers and
     // each layer is made up of game objects.
-    // Initially, the game starts with two layers,
-    // one for the level design and another for the characters.
-    std::array<std::vector<GameObject>, 2> layers;
-    float gravity = 200.0f;
+    // Initially, the game starts with three layers,
+    // one for the background, one for the level design and another for the characters.
+    std::array<std::vector<GameObject>, 3> layers;
+    float gravity = 300.0f;
     float groundY = 0.0f;
 
     GameState()
@@ -51,7 +57,7 @@ struct Resources
     std::vector<SDL_Texture *> textures;
 
     // All player's textures
-    SDL_Texture *texIdle = nullptr, *texRun = nullptr, *texJump = nullptr, *texAttack = nullptr;
+    SDL_Texture *texIdle = nullptr, *texRun = nullptr, *texJump = nullptr, *texAttack = nullptr, *texTiles = nullptr, *texEnemy = nullptr;
 
     // This method loads textures from an `assets/` directory from
     // program root and it does not traverse subdirectories.
@@ -85,11 +91,14 @@ struct Resources
         playerAnimations[ANIM_PLAYER_JUMP] = Animation(1.5f, 12);
         playerAnimations[ANIM_PLAYER_ATTACK] = Animation(1.0f, 4);
 
-        // setup player idle texture
+        // load player animations
         texIdle = loadTexture(state.renderer, "player/Idle.png");
         texRun = loadTexture(state.renderer, "player/Run.png");
         texJump = loadTexture(state.renderer, "player/Jump.png");
         texAttack = loadTexture(state.renderer, "player/Attack_2.png");
+
+        // load tileset
+        texTiles = loadTexture(state.renderer, "tileset/Tiles.png");
     };
 
     // Destroys all loaded textures.
@@ -105,7 +114,8 @@ struct Resources
 void cleanup(SDLState &state);
 bool initialize(SDLState &state);
 void drawObject(const SDLState &state, GameObject &obj);
-void updateObject(const SDLState &state, GameState &gs, Resources &res, GameObject &obj, float delta);
+void updateObject(const SDLState &state, const GameState &gs, const Resources &res, GameObject &obj, float delta);
+void createGrid(const SDLState &state, GameState &gs, const Resources &res);
 void applyDecel(GameObject &obj, float delta);
 
 int main(int, char *[])
@@ -132,22 +142,9 @@ int main(int, char *[])
 
     GameState gs;
 
-    //* create player
-    GameObject player;
-    gs.groundY = static_cast<float>(state.logH) - static_cast<float>(SPRITE_SIZE);
+    //* setup game objects from grid
 
-    player.data = PlayerData{};
-
-    player.texture = res.texIdle;
-    player.animations = res.playerAnimations;
-    player.currentAnimationIdx = res.ANIM_PLAYER_IDLE;
-
-    player.maxSpeedX = 100;
-    player.pos = glm::vec2(150.0f, gs.groundY);
-    player.accel = glm::vec2(900.0f, 0.0f);
-    player.velocity = glm::vec2(0.0f);
-
-    gs.layers[LAYER_IDX_CHARACTERS].push_back(player);
+    createGrid(state, gs, res);
 
     //* game loop
 
@@ -212,18 +209,6 @@ int main(int, char *[])
         // fills the back buffer entirely with that color
         // paints the WHOLE window (including the render canvas)
         SDL_RenderClear(state.renderer);
-
-        // separate the render canvas from the window background
-        SDL_SetRenderDrawColor(state.renderer, 20, 30, 10, SDL_ALPHA_OPAQUE);
-
-        SDL_FRect canvas{
-            .x = 0.0f,
-            .y = 0.0f,
-            .w = static_cast<float>(state.logW),
-            .h = static_cast<float>(state.logH),
-        };
-
-        SDL_RenderFillRect(state.renderer, &canvas);
 
         //* draw all updated game objects to screen
         for (auto &layer : gs.layers)
@@ -314,33 +299,49 @@ void cleanup(SDLState &state)
 void drawObject(const SDLState &state, GameObject &obj)
 
 {
-    float srcX = obj.currentAnimationIdx ? obj.animations[*obj.currentAnimationIdx].currentFrame() * SPRITE_SIZE : 0.0f;
 
-    // extract section from the texture
-    // all dims depend on the logical renderer dims and not window dims
-    // x, y are the offsets from the orgin (top left corner of image)
-    SDL_FRect src{
-        .x = srcX,
-        .y = 0.0f,
-        .w = static_cast<float>(SPRITE_SIZE),
-        .h = static_cast<float>(SPRITE_SIZE),
+    if (PlayerData *pd = std::get_if<PlayerData>(&obj.data))
+    {
+        float srcX = obj.currentAnimationIdx ? obj.animations[*obj.currentAnimationIdx].currentFrame() * SPRITE_SIZE : 0.0f;
+
+        // extract section from the texture
+        // all dims depend on the logical renderer dims and not window dims
+        // x, y are the offsets from the orgin (top left corner of image)
+        SDL_FRect src{
+            .x = srcX,
+            .y = 0.0f,
+            .w = static_cast<float>(SPRITE_SIZE),
+            .h = static_cast<float>(SPRITE_SIZE),
+        };
+
+        SDL_FRect dst{
+            .x = static_cast<float>(obj.pos.x),
+            .y = static_cast<float>(obj.pos.y),
+            .w = static_cast<float>(SPRITE_SIZE),
+            .h = static_cast<float>(SPRITE_SIZE),
+
+        };
+
+        SDL_FlipMode flipMode = obj.dir == -1 ? SDL_FLIP_HORIZONTAL : SDL_FLIP_NONE;
+
+        // draw player idle state to back buffer
+        SDL_RenderTextureRotated(state.renderer, obj.texture, &src, &dst, 0, NULL, flipMode);
+    }
+    else if (LevelData *ld = std::get_if<LevelData>(&obj.data))
+    {
+        SDL_FRect dst{
+            .x = static_cast<float>(obj.pos.x),
+            .y = static_cast<float>(obj.pos.y),
+            .w = static_cast<float>(GRID_TILE_PIXELS),
+            .h = static_cast<float>(GRID_TILE_PIXELS),
+
+        };
+
+        SDL_RenderTexture(state.renderer, obj.texture, &ld->src, &dst);
     };
-
-    SDL_FRect dst{
-        .x = static_cast<float>(obj.pos.x),
-        .y = static_cast<float>(obj.pos.y),
-        .w = static_cast<float>(SPRITE_SIZE),
-        .h = static_cast<float>(SPRITE_SIZE),
-
-    };
-
-    SDL_FlipMode flipMode = obj.dir == -1 ? SDL_FLIP_HORIZONTAL : SDL_FLIP_NONE;
-
-    // draw player idle state to back buffer
-    SDL_RenderTextureRotated(state.renderer, obj.texture, &src, &dst, 0, NULL, flipMode);
 };
 
-void updateObject(const SDLState &state, GameState &gs, Resources &res, GameObject &obj, float delta)
+void updateObject(const SDLState &state, const GameState &gs, const Resources &res, GameObject &obj, float delta)
 {
     // note: std::get_if() returns a pointer to the PlayerData
     // if that is what the variant holds, otherwise nullptr
@@ -369,7 +370,7 @@ void updateObject(const SDLState &state, GameState &gs, Resources &res, GameObje
             obj.isGrounded = false;
             pd->state = PlayerState::jumping;
             // current y speed is 0 so add jump impulse upwards
-            obj.velocity.y = -150.00f;
+            obj.velocity.y = -200.00f;
             obj.texture = res.texJump;
             obj.currentAnimationIdx = res.ANIM_PLAYER_JUMP;
             // start every jump from the first frame
@@ -448,7 +449,7 @@ void updateObject(const SDLState &state, GameState &gs, Resources &res, GameObje
             obj.velocity.x = dirVec * obj.maxSpeedX;
         }
 
-        // calculatew new vertical position from effect of gravity
+        // calculate new vertical position from effect of gravity
         obj.velocity.y += gs.gravity * delta;
 
         // calculate resulting player pos
@@ -485,6 +486,119 @@ void applyDecel(GameObject &obj, float delta)
         else
         {
             obj.velocity.x += decel;
+        }
+    }
+}
+
+/// @brief Creates GameObject according to a pre-determined game grid.
+void createGrid(const SDLState &state, GameState &gs, const Resources &res)
+{
+    // short aliases for tile variants
+    constexpr Tile _ = Tile::empty;
+    constexpr Tile WTL = Tile::woodTopLeft;
+    constexpr Tile WT = Tile::woodTop;
+    constexpr Tile WTR = Tile::woodTopRight;
+    constexpr Tile WL = Tile::woodLeft;
+    constexpr Tile WC = Tile::woodCenter;
+    constexpr Tile WR = Tile::woodRight;
+    constexpr Tile WBL = Tile::woodBottomLeft;
+    constexpr Tile WB = Tile::woodBottom;
+    constexpr Tile WBR = Tile::woodBottomRight;
+    constexpr Tile P = Tile::player;
+    constexpr Tile PL = Tile::plaster;
+
+    // clang-format off
+    Tile background[GRID_ROWS][GRID_COLS] = {
+        {PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL},
+        {PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL},
+        {PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL},
+        {PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL},
+        {PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL},
+        {PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL},
+        {PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL},
+        {PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL},
+        {PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL},
+        {PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL},
+        {PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL},
+        {PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL, PL,PL,PL,PL,PL,PL,PL,PL,PL,PL},
+    };
+
+    Tile foreground[GRID_ROWS][GRID_COLS] = {
+        //                10                   20                   30                   40                   50
+        {_,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_},
+        {_,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_},
+        {_,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_},
+        {_,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_},
+        {_,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_},
+        {_,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_},
+        {_,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_},
+        {_,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_},
+        {P,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_},
+        {WTL,WT, WT, WT, WT, WT, WT, WT, WT, WTR, _,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_},
+        {WL, WC, WC, WC, WC, WC, WC, WC, WC, WR,  _,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_},
+        {WBL,WB, WB, WB, WB, WB, WB, WB, WB, WBR, _,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_, _,_,_,_,_,_,_,_,_,_},
+    };
+    // clang-format on
+
+    auto makeTile = [&](Tile type, size_t row, size_t col)
+    {
+        GameObject tile;
+        tile.data = LevelData{.src = tileSrcRect(*tileIndex(type))};
+        tile.texture = res.texTiles;
+        tile.pos = glm::vec2(col * GRID_TILE_PIXELS, static_cast<float>(state.logH) - static_cast<float>((GRID_ROWS - row) * GRID_TILE_PIXELS));
+        return tile;
+    };
+
+    for (size_t row = 0; row < GRID_ROWS; row++)
+    {
+        for (size_t col = 0; col < GRID_COLS; col++)
+        {
+            //* background tile first
+            if (tileIndex(background[row][col]))
+            {
+                gs.layers[LAYER_IDX_BACKGROUND].push_back(makeTile(background[row][col], row, col));
+            }
+
+            //* foreground tile ontop background tile
+
+            switch (foreground[row][col])
+            {
+
+            case Tile::player:
+            {
+                GameObject player;
+                player.data = PlayerData{};
+
+                player.texture = res.texIdle;
+                player.animations = res.playerAnimations;
+                player.currentAnimationIdx = res.ANIM_PLAYER_IDLE;
+
+                player.maxSpeedX = 100;
+                player.pos = glm::vec2(col * GRID_TILE_PIXELS, static_cast<float>(state.logH) - static_cast<float>((GRID_ROWS - row) * GRID_TILE_PIXELS));
+                player.accel = glm::vec2(900.0f, 0.0f);
+                player.velocity = glm::vec2(0.0f);
+
+                gs.layers[LAYER_IDX_CHARACTERS].push_back(player);
+                break;
+            };
+
+            case Tile::empty:
+            case Tile::enemy:
+                // todo
+                break;
+
+            default:
+            {
+                GameObject tile = makeTile(foreground[row][col], row, col);
+                gs.layers[LAYER_IDX_LEVEL].push_back(tile);
+                //! refactor later: here ground y is set manually if woodTop tile
+                if (foreground[row][col] == Tile::woodTop)
+                {
+                    gs.groundY = tile.pos.y - static_cast<float>(SPRITE_SIZE);
+                };
+                break;
+            }
+            }
         }
     }
 }

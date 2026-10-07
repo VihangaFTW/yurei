@@ -26,7 +26,10 @@ struct PlayerData
 
 struct LevelData
 {
+    SDL_FRect src;  
+
 };
+
 struct EnemyData
 {
 };
