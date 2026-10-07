@@ -70,6 +70,7 @@ add_executable(ledge
     src/animation.h
     src/timer.h
     src/gameobject.h
+    src/tile.h
 )
 
 target_include_directories(ledge PRIVATE src)
