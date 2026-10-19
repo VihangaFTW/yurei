@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ledge CXX)
+project(yurei CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -65,7 +65,7 @@ FetchContent_MakeAvailable(glm)
 
 
 # ------------------------------------------------------------ our target
-add_executable(ledge
+add_executable(yurei
     src/main.cpp
     src/animation.h
     src/timer.h
@@ -73,9 +73,9 @@ add_executable(ledge
     src/tile.h
 )
 
-target_include_directories(ledge PRIVATE src)
+target_include_directories(yurei PRIVATE src)
 
-target_link_libraries(ledge PRIVATE
+target_link_libraries(yurei PRIVATE
     SDL3::SDL3
     SDL3_image::SDL3_image
     glm::glm
@@ -83,9 +83,9 @@ target_link_libraries(ledge PRIVATE
 
 # ---------------------------------------------------------------- assets
 # copy assets next to the build exe.
-add_custom_command(TARGET ledge POST_BUILD
+add_custom_command(TARGET yurei POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${CMAKE_CURRENT_SOURCE_DIR}/assets"
-        "$<TARGET_FILE_DIR:ledge>/assets"
-    COMMENT "Copying assets to $<TARGET_FILE_DIR:ledge>"
+        "$<TARGET_FILE_DIR:yurei>/assets"
+    COMMENT "Copying assets to $<TARGET_FILE_DIR:yurei>"
 )

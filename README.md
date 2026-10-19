@@ -27,7 +27,7 @@ cmake --build build --config Debug
 Run the game from the build output. For example on Windows:
 
 ```bash
-./build/Debug/ledge.exe
+./build/Debug/yurei.exe
 ```
 
-If using Make, the executable is at `./build/ledge`.
+If using Make, the executable is at `./build/yurei`.

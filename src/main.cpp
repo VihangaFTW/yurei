@@ -81,6 +81,8 @@ struct Resources
         return tex;
     };
 
+    
+
     // Creates a Animation object for player idle animation
     // and loads its associated png as a texture.
     void load(const SDLState &state)
@@ -252,7 +254,7 @@ bool initialize(SDLState &state)
 
     //* create window
 
-    state.window = SDL_CreateWindow("Ledge", state.width, state.height, SDL_WINDOW_RESIZABLE);
+    state.window = SDL_CreateWindow("Yurei", state.width, state.height, SDL_WINDOW_RESIZABLE);
 
     if (!state.window)
     {
