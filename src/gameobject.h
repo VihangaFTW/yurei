@@ -46,6 +46,8 @@ struct GameObject
     std::vector<Animation> animations;
     std::optional<size_t> currentAnimationIdx;
     SDL_Texture *texture;
+    // hitbox, relative to pos (the sprite's top left corner)
+    SDL_FRect collider;
 
     bool isGrounded;
 
@@ -58,6 +60,7 @@ struct GameObject
           accel(0.0f),
           currentAnimationIdx(std::nullopt),
           texture(nullptr),
+          collider{},
           isGrounded(true)
 
     {

@@ -6,8 +6,10 @@
 #include <vector>
 #include <array>
 #include <optional>
+#include <algorithm>
 #include "gameobject.h"
 #include "tile.h"
+#include "level.h"
 
 constexpr size_t LAYER_IDX_BACKGROUND = 0;
 constexpr size_t LAYER_IDX_LEVEL = 1;
@@ -15,8 +17,19 @@ constexpr size_t LAYER_IDX_CHARACTERS = 2;
 
 constexpr size_t SPRITE_SIZE = 128;
 
-constexpr size_t GRID_ROWS = 12;
-constexpr size_t GRID_COLS = 50;
+// the samurai's body inside its 128x128 frame,
+// centred horizontally so it still lines up when the sprite is flipped
+constexpr SDL_FRect PLAYER_COLLIDER{.x = 46.0f, .y = 50.0f, .w = 36.0f, .h = 78.0f};
+
+// stops a long fall from moving more than a tile per frame
+constexpr float MAX_FALL_SPEED = 500.0f;
+
+// longest time step a single frame simulates. a longer pause (e.g. while the
+// window is dragged) slows the game down instead of letting objects skip through tiles
+constexpr float MAX_FRAME_TIME = 1.0f / 30.0f;
+
+// draw hitboxes on top of everything
+constexpr bool DEBUG_COLLIDERS = false;
 
 struct SDLState
 {
@@ -37,7 +50,9 @@ struct GameState
     // one for the background, one for the level design and another for the characters.
     std::array<std::vector<GameObject>, 3> layers;
     float gravity = 300.0f;
-    float groundY = 0.0f;
+    Level level;
+    // where the player goes back to after falling out of the level
+    glm::vec2 playerSpawn{0.0f};
 
     GameState()
     {
@@ -81,7 +96,7 @@ struct Resources
         return tex;
     };
 
-    
+
 
     // Creates a Animation object for player idle animation
     // and loads its associated png as a texture.
@@ -119,6 +134,7 @@ void drawObject(const SDLState &state, GameObject &obj);
 void updateObject(const SDLState &state, const GameState &gs, const Resources &res, GameObject &obj, float delta);
 void createGrid(const SDLState &state, GameState &gs, const Resources &res);
 void applyDecel(GameObject &obj, float delta);
+void moveAndCollide(GameObject &obj, const Level &level, float delta);
 
 int main(int, char *[])
 {
@@ -182,7 +198,7 @@ int main(int, char *[])
         //* 2. handle player movement
 
         uint64_t nowTicks = SDL_GetTicks();
-        float elapsed = (nowTicks - prevTicks) / 1000.0f;
+        float elapsed = std::min((nowTicks - prevTicks) / 1000.0f, MAX_FRAME_TIME);
         prevTicks = nowTicks;
 
         //* update visible animation frames and positions for all game objects
@@ -328,6 +344,18 @@ void drawObject(const SDLState &state, GameObject &obj)
 
         // draw player idle state to back buffer
         SDL_RenderTextureRotated(state.renderer, obj.texture, &src, &dst, 0, NULL, flipMode);
+
+        if (DEBUG_COLLIDERS)
+        {
+            SDL_FRect box{
+                .x = obj.pos.x + obj.collider.x,
+                .y = obj.pos.y + obj.collider.y,
+                .w = obj.collider.w,
+                .h = obj.collider.h,
+            };
+            SDL_SetRenderDrawColor(state.renderer, 255, 0, 0, SDL_ALPHA_OPAQUE);
+            SDL_RenderRect(state.renderer, &box);
+        }
     }
     else if (LevelData *ld = std::get_if<LevelData>(&obj.data))
     {
@@ -451,20 +479,109 @@ void updateObject(const SDLState &state, const GameState &gs, const Resources &r
             obj.velocity.x = dirVec * obj.maxSpeedX;
         }
 
-        // calculate new vertical position from effect of gravity
-        obj.velocity.y += gs.gravity * delta;
+        // calculate new vertical velocity from effect of gravity
+        obj.velocity.y = std::min(obj.velocity.y + gs.gravity * delta, MAX_FALL_SPEED);
 
-        // calculate resulting player pos
-        obj.pos += obj.velocity * delta;
+        // move, stopping at any tile in the way
+        moveAndCollide(obj, gs.level, delta);
 
-        if (obj.pos.y >= gs.groundY)
+        // fell into a pit
+        if (obj.pos.y > static_cast<float>(state.logH))
         {
-            obj.pos.y = gs.groundY;
-            obj.velocity.y = 0.0f;
-            obj.isGrounded = true;
+            obj.pos = gs.playerSpawn;
+            obj.velocity = glm::vec2(0.0f);
         }
     }
 };
+
+// Keeps "touching" from counting as "overlapping" when a box sits exactly on a tile edge.
+constexpr float COLLISION_EPSILON = 0.01f;
+
+// Moves obj by its velocity and pushes it back out of any tile it runs into.
+//
+// X and Y are handled one after the other. Resolving them separately means a
+// player running into a wall while falling slides down it instead of sticking.
+// Assumes nothing moves more than one tile per frame (see MAX_FALL_SPEED).
+void moveAndCollide(GameObject &obj, const Level &level, float delta)
+{
+    //* 1. horizontal
+    obj.pos.x += obj.velocity.x * delta;
+
+    if (obj.velocity.x != 0.0f)
+    {
+        const float left = obj.pos.x + obj.collider.x;
+        const float right = left + obj.collider.w;
+        const float top = obj.pos.y + obj.collider.y;
+        const float bottom = top + obj.collider.h;
+
+        // only the leading edge can hit anything
+        const bool movingRight = obj.velocity.x > 0.0f;
+        const int col = level.colAt(movingRight ? right : left);
+
+        // without the epsilon, the floor we're standing on would count as a wall
+        for (int row = level.rowAt(top); row <= level.rowAt(bottom - COLLISION_EPSILON); row++)
+        {
+            if (level.collisionAt(row, col) == TileCollision::solid)
+            {
+                obj.pos.x = movingRight ? level.colX(col) - (obj.collider.x + obj.collider.w)
+                                        : level.colX(col + 1) - obj.collider.x;
+                obj.velocity.x = 0.0f;
+                break;
+            }
+        }
+    }
+
+    //* 2. vertical
+    // one-way platforms need to know where our feet were before this move
+    const float prevBottom = obj.pos.y + obj.collider.y + obj.collider.h;
+    obj.pos.y += obj.velocity.y * delta;
+
+    const float left = obj.pos.x + obj.collider.x;
+    const float right = left + obj.collider.w;
+    const float top = obj.pos.y + obj.collider.y;
+    const float bottom = top + obj.collider.h;
+    const int colLeft = level.colAt(left);
+    const int colRight = level.colAt(right - COLLISION_EPSILON);
+
+    // gravity pulls us down a little every frame, so this is re-checked each frame
+    obj.isGrounded = false;
+
+    if (obj.velocity.y > 0.0f)
+    {
+        // falling: check the row under our feet
+        const int row = level.rowAt(bottom);
+        const float rowTop = level.rowY(row);
+
+        for (int col = colLeft; col <= colRight; col++)
+        {
+            const TileCollision c = level.collisionAt(row, col);
+            const bool landsOnOneWay = c == TileCollision::oneWay && prevBottom <= rowTop + COLLISION_EPSILON;
+
+            if (c == TileCollision::solid || landsOnOneWay)
+            {
+                obj.pos.y = rowTop - (obj.collider.y + obj.collider.h);
+                obj.velocity.y = 0.0f;
+                obj.isGrounded = true;
+                break;
+            }
+        }
+    }
+    else if (obj.velocity.y < 0.0f)
+    {
+        // rising: check the row our head is in. one-way tiles let us through
+        const int row = level.rowAt(top);
+
+        for (int col = colLeft; col <= colRight; col++)
+        {
+            if (level.collisionAt(row, col) == TileCollision::solid)
+            {
+                obj.pos.y = level.rowY(row + 1) - obj.collider.y;
+                obj.velocity.y = 0.0f;
+                break;
+            }
+        }
+    }
+}
 
 // Applies deceleration to game character's slide after movement
 void applyDecel(GameObject &obj, float delta)
@@ -542,12 +659,15 @@ void createGrid(const SDLState &state, GameState &gs, const Resources &res)
     };
     // clang-format on
 
+    // bottom-align the grid with the bottom of the screen
+    gs.level.top = static_cast<float>(state.logH) - static_cast<float>(GRID_ROWS * GRID_TILE_PIXELS);
+
     auto makeTile = [&](Tile type, size_t row, size_t col)
     {
         GameObject tile;
         tile.data = LevelData{.src = tileSrcRect(*tileIndex(type))};
         tile.texture = res.texTiles;
-        tile.pos = glm::vec2(col * GRID_TILE_PIXELS, static_cast<float>(state.logH) - static_cast<float>((GRID_ROWS - row) * GRID_TILE_PIXELS));
+        tile.pos = glm::vec2(gs.level.colX(static_cast<int>(col)), gs.level.rowY(static_cast<int>(row)));
         return tile;
     };
 
@@ -555,6 +675,9 @@ void createGrid(const SDLState &state, GameState &gs, const Resources &res)
     {
         for (size_t col = 0; col < GRID_COLS; col++)
         {
+            //* keep the foreground for collision
+            gs.level.tiles[row][col] = foreground[row][col];
+
             //* background tile first
             if (tileIndex(background[row][col]))
             {
@@ -576,7 +699,17 @@ void createGrid(const SDLState &state, GameState &gs, const Resources &res)
                 player.currentAnimationIdx = res.ANIM_PLAYER_IDLE;
 
                 player.maxSpeedX = 100;
-                player.pos = glm::vec2(col * GRID_TILE_PIXELS, static_cast<float>(state.logH) - static_cast<float>((GRID_ROWS - row) * GRID_TILE_PIXELS));
+                player.collider = PLAYER_COLLIDER;
+                // centre the hitbox in the P cell and stand its feet on the cell's bottom edge
+                player.pos = glm::vec2(
+                    gs.level.colX(static_cast<int>(col)) + GRID_TILE_PIXELS / 2.0f - (player.collider.x + player.collider.w / 2.0f),
+                    gs.level.rowY(static_cast<int>(row) + 1) - (player.collider.y + player.collider.h));
+                // the hitbox is wider than a tile, so a P in the first or last column would
+                // poke into the level's edge walls and stop the player from jumping
+                player.pos.x = std::clamp(player.pos.x,
+                                          -player.collider.x,
+                                          gs.level.colX(static_cast<int>(GRID_COLS)) - (player.collider.x + player.collider.w));
+                gs.playerSpawn = player.pos;
                 player.accel = glm::vec2(900.0f, 0.0f);
                 player.velocity = glm::vec2(0.0f);
 
@@ -586,18 +719,12 @@ void createGrid(const SDLState &state, GameState &gs, const Resources &res)
 
             case Tile::empty:
             case Tile::enemy:
-                // todo
+                // todo:
                 break;
 
             default:
             {
-                GameObject tile = makeTile(foreground[row][col], row, col);
-                gs.layers[LAYER_IDX_LEVEL].push_back(tile);
-                //! refactor later: here ground y is set manually if woodTop tile
-                if (foreground[row][col] == Tile::woodTop)
-                {
-                    gs.groundY = tile.pos.y - static_cast<float>(SPRITE_SIZE);
-                };
+                gs.layers[LAYER_IDX_LEVEL].push_back(makeTile(foreground[row][col], row, col));
                 break;
             }
             }

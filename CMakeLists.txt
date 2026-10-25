@@ -71,6 +71,7 @@ add_executable(yurei
     src/timer.h
     src/gameobject.h
     src/tile.h
+    src/level.h
 )
 
 target_include_directories(yurei PRIVATE src)
